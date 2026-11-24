@@ -62,7 +62,7 @@ class DashboardController extends Controller
             'rooms_total' => Room::count(),
 
             // Ruangan tersedia = bukan maintenance dan tidak memiliki agenda bentrok
-            'rooms_available' => Room::where('status', '!=', 'Maintenance')
+            'rooms_available' => Room::where('status', 'Available',)
                 ->whereNotIn('id', $bookedRoomIds)
                 ->count(),
 

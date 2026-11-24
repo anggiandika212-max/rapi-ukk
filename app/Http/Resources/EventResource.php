@@ -54,6 +54,7 @@ class EventResource extends JsonResource
                     'email' => $this->approver->email,
                 ];
             }),
+            'rejection_reason' => $this->rejection_reason,
 
             'created_at' => $this->created_at?->format('Y-m-d H:i:s'),
             'updated_at' => $this->updated_at?->format('Y-m-d H:i:s'),

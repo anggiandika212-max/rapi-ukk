@@ -149,7 +149,11 @@ async function loadDashboard() {
     `
         <tr><td class="fw-semibold">${rapiEscape(event.title)}</td>
         <td>${rapiFormatDate(event.date)}</td>
-        <td>${rapiEscape(event.start_time)} - ${rapiEscape(event.end_time)}</td>
+        <td>
+            ${rapiEscape((event.start_time || '').slice(0, 5))}
+            -
+            ${rapiEscape((event.end_time || '').slice(0, 5))}
+        </td>
         <td>${rapiEscape(event.room || '-')}</td>
         </tr>`
   ).join('') : '<tr><td colspan="4" class="text-center py-5 text-muted">Belum ada event.</td></tr>';

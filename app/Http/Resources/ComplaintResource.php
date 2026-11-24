@@ -16,8 +16,14 @@ class ComplaintResource extends JsonResource
 
             'status_repair' => $this->status_repair,
 
+            // Foto pengaduan dari Guru
             'photo' => $this->photo_path
                 ? asset('storage/' . $this->photo_path)
+                : null,
+
+            // Foto bukti penanganan dari PIC
+            'repair_photo' => $this->repair_photo_path
+                ? asset('storage/' . $this->repair_photo_path)
                 : null,
 
             'room' => $this->whenLoaded('room', function () {
@@ -36,6 +42,7 @@ class ComplaintResource extends JsonResource
 
             'created_at' => $this->created_at?->format('Y-m-d H:i:s'),
             'updated_at' => $this->updated_at?->format('Y-m-d H:i:s'),
+
             'can_edit' => (
                 $request->user()?->role?->role_name === 'Guru' &&
                 (int) $request->user()?->id === (int) $this->reporter_id &&

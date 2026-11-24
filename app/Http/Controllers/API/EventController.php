@@ -1,7 +1,7 @@
 <?php
 
 namespace App\Http\Controllers\API;
-
+use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\EventResource;
 use App\Models\Event;
@@ -649,9 +649,40 @@ class EventController extends Controller
             ],
         ]);
     }
-    public function approval(Request $request, string $id)
-    {
-        $event = Event::find($id);
+    
+public function approval(Request $request, string $id)
+{
+// Hanya Admin yang boleh memproses persetujuan dan penolakan.
+    if ($request->user()->role?->role_name !== 'Admin') {
+        return response()->json([
+            'success' => false,
+            'message' => 'Hanya Admin yang dapat memproses event.',
+        ], 403);
+    }
+
+    $validated = $request->validate([
+        'status' => [
+            'required',
+            Rule::in(['Approved', 'Rejected']),
+        ],
+
+        'rejection_reason' => [
+            'required_if:status,Rejected',
+            'nullable',
+            'string',
+            'max:2000',
+        ],
+    ], [
+        'rejection_reason.required_if' =>
+            'Alasan penolakan wajib diisi.',
+    ]);
+
+    return DB::transaction(function () use ($request, $id, $validated) {
+
+        // Ambil event dan kunci selama proses approval.
+        $event = Event::whereKey($id)
+            ->lockForUpdate()
+            ->first();
 
         if (!$event) {
             return response()->json([
@@ -660,18 +691,7 @@ class EventController extends Controller
             ], 404);
         }
 
-        $validated = $request->validate([
-            'status' => [
-                'required',
-                Rule::in(['Approved', 'Rejected']),
-            ],
-        ]);
-
-        /*
-        ==========================================
-        HANYA EVENT PENDING YANG BISA DI-APPROVE
-        ==========================================
-        */
+        // Hanya event Pending yang bisa diproses.
         if ($event->status !== 'Pending') {
             return response()->json([
                 'success' => false,
@@ -679,46 +699,77 @@ class EventController extends Controller
             ], 422);
         }
 
-        /*
-        ==========================================
-        CEK BENTROK SAAT APPROVAL
-        ==========================================
-        */
-        if ($validated['status'] === 'Approved') {
+        // Ambil dan kunci ruangan yang digunakan event.
+        $room = Room::whereKey($event->room_id)
+            ->lockForUpdate()
+            ->first();
 
-        $conflict = Event::where('room_id', $event->room_id)
-            ->whereDate('event_date', $event->event_date)
-            ->where('id', '!=', $event->id)
-            ->whereIn('status', ['Pending', 'Approved'])
-            ->where('start_time', '<', $event->end_time)
-            ->where('end_time', '>', $event->start_time)
-            ->exists();
-
-        if ($conflict) {
+        if (!$room) {
             return response()->json([
                 'success' => false,
-                'message' => 'Event tidak dapat disetujui karena jadwal ruangan bertabrakan dengan pengajuan lain.',
-            ], 422);
-        }
+                'message' => 'Ruangan event tidak ditemukan.',
+            ], 404);
         }
 
-        $event->update([
-            'status' => $validated['status'],
-            'approved_by' => $validated['status'] === 'Approved'
-                ? $request->user()->id
-                : null,
-        ]);
+        if ($validated['status'] === 'Approved') {
+
+            // Ruangan Maintenance tidak boleh disetujui.
+            if ($room->status === 'Maintenance') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ruangan sedang dalam perbaikan dan tidak dapat digunakan.',
+                ], 422);
+            }
+
+            // Periksa bentrok jadwal.
+            $conflict = Event::where('room_id', $event->room_id)
+                ->whereDate('event_date', $event->event_date)
+                ->where('id', '!=', $event->id)
+                ->whereIn('status', ['Pending', 'Approved'])
+                ->where('start_time', '<', $event->end_time)
+                ->where('end_time', '>', $event->start_time)
+                ->exists();
+
+            if ($conflict) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Event tidak dapat disetujui karena jadwal ruangan bertabrakan dengan pengajuan lain.',
+                ], 422);
+            }
+        }
+
+        // Update status dan alasan penolakan event
+        $event->status = $validated['status'];
+
+        $event->approved_by = $validated['status'] === 'Approved'
+            ? $request->user()->id
+            : null;
+
+        $event->rejection_reason = $validated['status'] === 'Rejected'
+            ? trim($validated['rejection_reason'])
+            : null;
+
+        $event->save();
+
+        // Jika event disetujui, otomatis ubah status ruangan.
+        if ($validated['status'] === 'Approved') {
+            $room->update([
+                'status' => 'Booked',
+            ]);
+        }
 
         $event->load(['room', 'user', 'approver']);
 
         return response()->json([
             'success' => true,
             'message' => $validated['status'] === 'Approved'
-                ? 'Event berhasil disetujui.'
+                ? 'Event berhasil disetujui dan status ruangan berubah menjadi Booked.'
                 : 'Event berhasil ditolak.',
             'data' => new EventResource($event),
         ]);
-    }
+    });
+}
+
     public function calendarInternal(Request $request)
     {
         $request->validate([
@@ -825,7 +876,7 @@ class EventController extends Controller
         ]);
 
         $conflictQuery = Event::query()
-            ->select('room_id')
+            ->select('room_id',)
             ->whereDate('event_date', $validated['event_date'])
             ->whereIn('status', ['Pending', 'Approved'])
             ->where('start_time', '<', $validated['end_time'])
@@ -841,7 +892,7 @@ class EventController extends Controller
         }
 
         $rooms = Room::query()
-            ->where('status', ['Available', 'Booked'])
+            ->whereIn('status', ['Available', 'Booked'])
             ->whereNotIn('id', $conflictQuery)
             ->orderBy('room_name')
             ->get(['id', 'room_name', 'status']);

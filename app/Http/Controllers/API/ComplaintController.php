@@ -217,16 +217,14 @@ class ComplaintController extends Controller
     }
 
     /**
-     * Update status perbaikan oleh PIC.
+     * Update status perbaikan dan upload foto bukti oleh PIC.
      */
-    
     public function updatestatus(Request $request, string $id)
     {
         $user = $request->user();
 
-        $complaint = Complaint::with('room')->find($id);
+        $complaint = Complaint::with(['room', 'reporter'])->find($id);
 
-        // 1. Periksa apakah complaint tersedia.
         if (!$complaint) {
             return response()->json([
                 'success' => false,
@@ -234,7 +232,7 @@ class ComplaintController extends Controller
             ], 404);
         }
 
-        // 2. Pastikan hanya PIC ruangan terkait yang dapat mengubah status.
+        // Hanya PIC ruangan terkait yang dapat memperbarui pengaduan.
         if (
             $user->role?->role_name !== 'PIC' ||
             !$complaint->room ||
@@ -246,7 +244,7 @@ class ComplaintController extends Controller
             ], 403);
         }
 
-        // 3. Validasi status perbaikan.
+        // Validasi status dan foto.
         $validated = $request->validate([
             'status_repair' => [
                 'required',
@@ -256,21 +254,59 @@ class ComplaintController extends Controller
                     Complaint::STATUS_SUDAH_DIPERBAIKI,
                 ]),
             ],
+            'repair_photo' => [
+                'required_if:status_repair,' . Complaint::STATUS_SUDAH_DIPERBAIKI,
+                'image',
+                'mimes:jpg,jpeg,png,webp',
+                'max:5120',
+            ],
+        ], [
+            'status_repair.required' => 'Status perbaikan wajib dipilih.',
+            'repair_photo.required_if' => 'Foto bukti wajib diunggah ketika status Sudah Diperbaiki.',
+            'repair_photo.image' => 'File harus berupa gambar.',
+            'repair_photo.mimes' => 'Foto harus JPG, JPEG, PNG, atau WebP.',
+            'repair_photo.max' => 'Ukuran foto maksimal 5 MB.',
         ]);
 
-        // 4. Perbarui status complaint.
-       $oldStatus = $complaint->status_repair;
+        $oldStatus = $complaint->status_repair;
+        $oldPhotoPath = $complaint->repair_photo_path;
+        $newPhotoPath = null;
 
-        $complaint->update([
-            'status_repair' => $validated['status_repair'],
-        ]);
+        // Foto hanya disimpan jika PIC mengunggah foto baru.
+        if ($request->hasFile('repair_photo')) {
+            $newPhotoPath = $request->file('repair_photo')
+                ->store('complaint-repairs', 'public');
+        }
 
-        $complaint->load([
-            'room',
-            'reporter',
-        ]);
+        try {
+            $complaint->status_repair = $validated['status_repair'];
 
-        // Kirim notifikasi hanya jika status benar-benar berubah.
+            // Jika tidak ada foto baru, foto sebelumnya tetap dipertahankan.
+            if ($newPhotoPath !== null) {
+                $complaint->repair_photo_path = $newPhotoPath;
+            }
+
+            $complaint->save();
+        } catch (\Throwable $e) {
+            if ($newPhotoPath !== null) {
+                Storage::disk('public')->delete($newPhotoPath);
+            }
+
+            throw $e;
+        }
+
+        // Hapus foto lama setelah foto baru berhasil disimpan.
+        if (
+            $newPhotoPath !== null &&
+            $oldPhotoPath &&
+            $oldPhotoPath !== $newPhotoPath
+        ) {
+            Storage::disk('public')->delete($oldPhotoPath);
+        }
+
+        $complaint->load(['room', 'reporter']);
+
+        // Kirim notifikasi jika status berubah.
         if (
             $oldStatus !== $complaint->status_repair &&
             $complaint->reporter
@@ -279,6 +315,12 @@ class ComplaintController extends Controller
                 new ComplaintStatusUpdatedNotification($complaint)
             );
         }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Status pengaduan berhasil diperbarui.',
+            'data' => new ComplaintResource($complaint),
+        ]);
     }
     //guru edit complaint
     public function update(Request $request, $id)
